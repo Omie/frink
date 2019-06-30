@@ -1,2 +1,6 @@
 # frink
-simple 'did you mean?' service using postgresql
+
+a simple 'did you mean?' service using postgresql and Go
+
+
+
