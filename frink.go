@@ -8,6 +8,9 @@ import (
 	"strings"
 	"sync"
 
+	"github.com/agnivade/levenshtein"
+	"golang.org/x/text/unicode/norm"
+
 	// import postgres driver
 	_ "github.com/lib/pq"
 )
@@ -22,7 +25,7 @@ type Frink struct{}
 type suggestion struct {
 	value        string
 	score        float32
-	editDistance float32
+	editDistance int
 }
 
 type token struct {
@@ -71,6 +74,9 @@ func (t *token) GetSuggestionFromDB(db *sql.DB, wg *sync.WaitGroup) {
 			s = suggestion{value: t.Original, score: 0.0, editDistance: 0}
 		}
 		// log.Println(s)
+		normO := norm.NFC.String(t.Original)
+		normV := norm.NFC.String(s.value)
+		s.editDistance = levenshtein.ComputeDistance(normO, normV)
 		t.Suggestions = append(t.Suggestions, s)
 	}
 
@@ -149,12 +155,16 @@ func (f *Frink) GetSuggestion(query string, format bool) (string, error) {
 	}
 	wg.Wait()
 
+	// TODO: At this point, should sort the suggestions list by
+	// match score, then edit distance, then suggestion string len probably
+
 	var sf = "%s"
 	var suggestedQuery bytes.Buffer
 	for idx, t := range tokens {
 		sf = "%s"
 		if format && t.HasSuggestions {
 			sf = suggestionFormat
+			log.Println(t.Suggestions)
 		}
 		suggestedQuery.WriteString(fmt.Sprintf(sf, t.Suggestions[0].value))
 		if idx < len(tokens)-1 {
