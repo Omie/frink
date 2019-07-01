@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"database/sql"
 	"fmt"
+	"log"
 	"strings"
 	"sync"
 
@@ -12,17 +13,28 @@ import (
 )
 
 var specialChars = "`~!@#$%^&*()-_+=|\\{}[]:;'\"/?.,><"
-var dbQuery = "SELECT name, similarity(name, '%s') AS sml FROM countries WHERE name ILIKE '%s' ORDER BY sml DESC, name"
+var dbQuery = "SELECT name, similarity(name, '%s') AS sml FROM countries WHERE name ILIKE '%s' ORDER BY sml DESC, name LIMIT 5"
 var suggestionFormat = "<i>%s</i>"
 
 // Frink type is a core type to bind methods to
 type Frink struct{}
 
+type suggestion struct {
+	value        string
+	score        float32
+	editDistance float32
+}
+
 type token struct {
-	Original        string
-	Suggestion      string
-	SuggestionScore float32
-	Order           int
+	Original       string
+	Suggestions    []suggestion
+	Order          int
+	HasSuggestions bool
+}
+
+func (t *token) copyOriginalToSuggestion() {
+	s := suggestion{value: t.Original, score: 0.0, editDistance: 0}
+	t.Suggestions = append(t.Suggestions, s)
 }
 
 func (t *token) GetSuggestionFromDB(db *sql.DB, wg *sync.WaitGroup) {
@@ -32,30 +44,51 @@ func (t *token) GetSuggestionFromDB(db *sql.DB, wg *sync.WaitGroup) {
 			- length >= 4
 			- return if not
 		query the db
-		if suggestion score >= 0.300, put in the Suggestion from db value
-		else, copy the original value to suggestion
+		put in returned values into suggestions slice, put in a single original value in case of error anywhere
 	*/
-	if len(t.Original) < 4 {
-		t.Suggestion = t.Original
-		t.SuggestionScore = 0.0
+	if len(t.Original) < 3 {
+		t.copyOriginalToSuggestion()
 		return
 	}
 
 	tokenQuery := fmt.Sprintf(dbQuery, t.Original, "%"+t.Original+"%")
-	err := db.QueryRow(tokenQuery).Scan(&t.Suggestion, &t.SuggestionScore)
-	switch {
-	case err == sql.ErrNoRows:
-		t.Suggestion = t.Original
-		t.SuggestionScore = 0.0
-		// fmt.Println("ERROR: NoRows")
-	case err != nil:
-		t.Suggestion = t.Original
-		t.SuggestionScore = 0.0
-		fmt.Println("ERROR: ", err.Error())
+	//log.Println(tokenQuery)
+
+	rows, err := db.Query(tokenQuery)
+	if err != nil {
+		log.Fatalln(err.Error())
+		t.copyOriginalToSuggestion()
+		return
 	}
-	if t.SuggestionScore < 0.3 {
-		t.Suggestion = t.Original
+	defer rows.Close()
+
+	for rows.Next() {
+		// log.Println("--- found a row")
+		var s suggestion
+		err = rows.Scan(&s.value, &s.score)
+		if err != nil {
+			log.Fatalln(err.Error())
+			s = suggestion{value: t.Original, score: 0.0, editDistance: 0}
+		}
+		// log.Println(s)
+		t.Suggestions = append(t.Suggestions, s)
 	}
+
+	// get any error encountered during iteration
+	err = rows.Err()
+	if err != nil {
+		log.Fatalln(err.Error())
+		t.copyOriginalToSuggestion()
+		return
+	}
+	// mark HasSuggestions if we have received suggestions from the db so far
+	t.HasSuggestions = len(t.Suggestions) > 0
+
+	// if nobody assigned suggestions, copy original as default suggestion
+	if len(t.Suggestions) == 0 {
+		t.copyOriginalToSuggestion()
+	}
+
 }
 
 func cleanQuery(query string) string {
@@ -70,7 +103,7 @@ func createTokens(cleandQuery string) []token {
 	var tokens []token
 	parts := strings.Split(cleandQuery, " ")
 	for idx, part := range parts {
-		t := token{Original: part, Order: idx + 1}
+		t := token{Original: part, Order: idx + 1, HasSuggestions: false}
 		tokens = append(tokens, t)
 	}
 	return tokens
@@ -120,10 +153,10 @@ func (f *Frink) GetSuggestion(query string, format bool) (string, error) {
 	var suggestedQuery bytes.Buffer
 	for idx, t := range tokens {
 		sf = "%s"
-		if format && t.SuggestionScore > 0.0 {
+		if format && t.HasSuggestions {
 			sf = suggestionFormat
 		}
-		suggestedQuery.WriteString(fmt.Sprintf(sf, t.Suggestion))
+		suggestedQuery.WriteString(fmt.Sprintf(sf, t.Suggestions[0].value))
 		if idx < len(tokens)-1 {
 			suggestedQuery.WriteString(" ")
 		}
