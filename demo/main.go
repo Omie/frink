@@ -9,6 +9,7 @@ import (
 var queries = []string{"what is the population of Indi?",
 	"who is the president of apan?",
 	"how big is ussia?",
+	"how big is gua?",
 }
 
 func main() {
