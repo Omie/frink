@@ -5,6 +5,7 @@ import (
 	"database/sql"
 	"fmt"
 	"log"
+	"sort"
 	"strings"
 	"sync"
 
@@ -38,6 +39,30 @@ type token struct {
 func (t *token) copyOriginalToSuggestion() {
 	s := suggestion{value: t.Original, score: 0.0, editDistance: 0}
 	t.Suggestions = append(t.Suggestions, s)
+}
+
+func (t *token) sortSuggestions() {
+	sort.Slice(t.Suggestions, func(i, j int) bool {
+		// sort by score first
+		// sort in DESC order of score
+		if t.Suggestions[i].score > t.Suggestions[j].score {
+			return true
+		}
+		if t.Suggestions[i].score < t.Suggestions[j].score {
+			return false
+		}
+		// sort by edit distance
+		// sort by ASC order
+		if t.Suggestions[i].editDistance < t.Suggestions[j].editDistance {
+			return true
+		}
+		if t.Suggestions[i].editDistance > t.Suggestions[j].editDistance {
+			return false
+		}
+
+		// finally sort by name
+		return t.Suggestions[i].value < t.Suggestions[j].value
+	})
 }
 
 func (t *token) GetSuggestionFromDB(db *sql.DB, wg *sync.WaitGroup) {
@@ -95,6 +120,7 @@ func (t *token) GetSuggestionFromDB(db *sql.DB, wg *sync.WaitGroup) {
 		t.copyOriginalToSuggestion()
 	}
 
+	t.sortSuggestions()
 }
 
 func cleanQuery(query string) string {
@@ -154,9 +180,6 @@ func (f *Frink) GetSuggestion(query string, format bool) (string, error) {
 		go tokens[idx].GetSuggestionFromDB(db, &wg)
 	}
 	wg.Wait()
-
-	// TODO: At this point, should sort the suggestions list by
-	// match score, then edit distance, then suggestion string len probably
 
 	var sf = "%s"
 	var suggestedQuery bytes.Buffer
